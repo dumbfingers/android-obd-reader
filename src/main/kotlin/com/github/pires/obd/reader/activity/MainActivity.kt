@@ -1,8 +1,6 @@
 package com.github.pires.obd.reader.activity
 
 import android.Manifest
-import android.app.Activity
-import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
 import android.content.*
 import android.content.pm.PackageManager
@@ -14,11 +12,24 @@ import android.location.*
 import android.os.*
 import android.preference.PreferenceManager
 import android.util.Log
-import android.view.Gravity
-import android.view.Menu
-import android.view.MenuItem
-import android.view.ViewGroup
-import android.widget.*
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import androidx.appcompat.app.AlertDialog
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.livedata.observeAsState
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.github.pires.obd.commands.SpeedCommand
@@ -32,13 +43,14 @@ import com.github.pires.obd.reader.net.ObdReading
 import com.github.pires.obd.reader.net.ObdService
 import com.github.pires.obd.reader.trips.TripLog
 import com.github.pires.obd.reader.trips.TripRecord
+import com.github.pires.obd.reader.ui.theme.ObdReaderTheme
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
 
-class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatus.Listener {
+class MainActivity : ComponentActivity(), ObdProgressListener, LocationListener, GpsStatus.Listener {
 
     private var mGpsIsStarted = false
     private var mLocService: LocationManager? = null
@@ -48,16 +60,11 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
     private lateinit var triplog: TripLog
     private var currentTrip: TripRecord? = null
 
-    private lateinit var compass: TextView
-    private lateinit var btStatusTextView: TextView
-    private lateinit var obdStatusTextView: TextView
-    private lateinit var gpsStatusTextView: TextView
-    private lateinit var vv: LinearLayout
-    private lateinit var tl: TableLayout
-
     private lateinit var sensorManager: SensorManager
     private lateinit var powerManager: PowerManager
     private lateinit var prefs: SharedPreferences
+
+    private val viewModel: MainViewModel by viewModels()
 
     private var isServiceBound = false
     private var service: AbstractGatewayService? = null
@@ -76,7 +83,7 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
                 x >= 292.5 && x < 337.5 -> "NW"
                 else -> ""
             }
-            updateTextView(compass, dir)
+            viewModel.updateCompass(dir)
         }
 
         override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
@@ -98,12 +105,12 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
 
                     val sb = StringBuilder()
                     sb.append("Lat: ")
-                    sb.append(mLastLocation!!.latitude.toString().let { if(it.length > posLen) it.substring(0, posLen) else it })
+                    sb.append(mLastLocation!!.latitude.toString().let { if (it.length > posLen) it.substring(0, posLen) else it })
                     sb.append(" Lon: ")
-                    sb.append(mLastLocation!!.longitude.toString().let { if(it.length > posLen) it.substring(0, posLen) else it })
+                    sb.append(mLastLocation!!.longitude.toString().let { if (it.length > posLen) it.substring(0, posLen) else it })
                     sb.append(" Alt: ")
                     sb.append(mLastLocation!!.altitude)
-                    gpsStatusTextView.text = sb.toString()
+                    viewModel.updateGpsStatus(sb.toString())
                 }
                 if (prefs.getBoolean(ConfigActivity.UPLOAD_DATA_KEY, false)) {
                     val vin = prefs.getString(ConfigActivity.VEHICLE_ID_KEY, "UNDEFINED_VIN")
@@ -136,10 +143,10 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
             try {
                 service!!.startService()
                 if (preRequisites)
-                    btStatusTextView.text = getString(R.string.status_bluetooth_connected)
+                    viewModel.updateBtStatus(getString(R.string.status_bluetooth_connected))
             } catch (ioe: IOException) {
                 Log.e(TAG, "Failure Starting live data")
-                btStatusTextView.text = getString(R.string.status_bluetooth_error_connecting)
+                viewModel.updateBtStatus(getString(R.string.status_bluetooth_error_connecting))
                 doUnbindService()
             }
         }
@@ -154,15 +161,6 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.main)
-
-        // Initialize views
-        compass = findViewById(R.id.compass_text)
-        btStatusTextView = findViewById(R.id.BT_STATUS)
-        obdStatusTextView = findViewById(R.id.OBD_STATUS)
-        gpsStatusTextView = findViewById(R.id.GPS_POS)
-        vv = findViewById(R.id.vehicle_view)
-        tl = findViewById(R.id.data_table)
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -176,12 +174,26 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
         if (sensors.size > 0)
             orientSensor = sensors[0]
         else
-            showDialog(NO_ORIENTATION_SENSOR)
+            showObdDialog(NO_ORIENTATION_SENSOR)
 
         triplog = TripLog.getInstance(this.applicationContext)
-        obdStatusTextView.text = getString(R.string.status_obd_disconnected)
+        viewModel.updateObdStatus(getString(R.string.status_obd_disconnected))
 
         checkAndRequestPermissions()
+
+        setContent {
+            ObdReaderTheme {
+                MainScreen(viewModel, onMenuAction = { action ->
+                    when (action) {
+                        MenuAction.START_LIVE_DATA -> startLiveData()
+                        MenuAction.STOP_LIVE_DATA -> stopLiveData()
+                        MenuAction.GET_DTC -> getTroubleCodes()
+                        MenuAction.TRIPS_LIST -> startActivity(Intent(this, TripListActivity::class.java))
+                        MenuAction.SETTINGS -> updateConfig()
+                    }
+                }, isServiceRunning = service?.isRunning ?: false)
+            }
+        }
     }
 
     private fun checkAndRequestPermissions() {
@@ -248,50 +260,15 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
         gpsInit()
 
         if (!preRequisites) {
-            showDialog(BLUETOOTH_DISABLED)
-            btStatusTextView.text = getString(R.string.status_bluetooth_disabled)
+            showObdDialog(BLUETOOTH_DISABLED)
+            viewModel.updateBtStatus(getString(R.string.status_bluetooth_disabled))
         } else {
-            btStatusTextView.text = getString(R.string.status_bluetooth_ok)
+            viewModel.updateBtStatus(getString(R.string.status_bluetooth_ok))
         }
     }
 
     private fun updateConfig() {
         startActivity(Intent(this, ConfigActivity::class.java))
-    }
-
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menu.add(0, START_LIVE_DATA, 0, getString(R.string.menu_start_live_data))
-        menu.add(0, STOP_LIVE_DATA, 0, getString(R.string.menu_stop_live_data))
-        menu.add(0, GET_DTC, 0, getString(R.string.menu_get_dtc))
-        menu.add(0, TRIPS_LIST, 0, getString(R.string.menu_trip_list))
-        menu.add(0, SETTINGS, 0, getString(R.string.menu_settings))
-        return true
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        when (item.itemId) {
-            START_LIVE_DATA -> {
-                startLiveData()
-                return true
-            }
-            STOP_LIVE_DATA -> {
-                stopLiveData()
-                return true
-            }
-            SETTINGS -> {
-                updateConfig()
-                return true
-            }
-            GET_DTC -> {
-                getTroubleCodes()
-                return true
-            }
-            TRIPS_LIST -> {
-                startActivity(Intent(this, TripListActivity::class.java))
-                return true
-            }
-        }
-        return false
     }
 
     private fun getTroubleCodes() {
@@ -300,19 +277,19 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
 
     private fun startLiveData() {
         Log.d(TAG, "Starting live data..")
-        tl.removeAllViews()
+        viewModel.clearObdData()
         doBindService()
 
         currentTrip = triplog.startTrip()
         if (currentTrip == null)
-            showDialog(SAVE_TRIP_NOT_AVAILABLE)
+            showObdDialog(SAVE_TRIP_NOT_AVAILABLE)
 
         Handler(Looper.getMainLooper()).post(mQueueCommands)
 
         if (prefs.getBoolean(ConfigActivity.ENABLE_GPS_KEY, false))
             gpsStart()
         else
-            gpsStatusTextView.text = getString(R.string.status_gps_not_used)
+            viewModel.updateGpsStatus(getString(R.string.status_gps_not_used))
 
         wakeLock?.acquire()
 
@@ -361,72 +338,30 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
         }
     }
 
-    override fun onCreateDialog(id: Int): AlertDialog? {
+    private fun showObdDialog(id: Int) {
         val build = AlertDialog.Builder(this)
         when (id) {
             NO_BLUETOOTH_ID -> {
                 build.setMessage(getString(R.string.text_no_bluetooth_id))
-                return build.create()
+                build.show()
             }
             BLUETOOTH_DISABLED -> {
                 val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
                 startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT)
-                return build.create()
             }
             NO_ORIENTATION_SENSOR -> {
                 build.setMessage(getString(R.string.text_no_orientation_sensor))
-                return build.create()
+                build.show()
             }
             NO_GPS_SUPPORT -> {
                 build.setMessage(getString(R.string.text_no_gps_support))
-                return build.create()
+                build.show()
             }
             SAVE_TRIP_NOT_AVAILABLE -> {
                 build.setMessage(getString(R.string.text_save_trip_not_available))
-                return build.create()
+                build.show()
             }
         }
-        return null
-    }
-
-    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
-        val startItem = menu.findItem(START_LIVE_DATA)
-        val stopItem = menu.findItem(STOP_LIVE_DATA)
-        val settingsItem = menu.findItem(SETTINGS)
-        val getDTCItem = menu.findItem(GET_DTC)
-
-        if (service?.isRunning == true) {
-            getDTCItem.isEnabled = false
-            startItem.isEnabled = false
-            stopItem.isEnabled = true
-            settingsItem.isEnabled = false
-        } else {
-            getDTCItem.isEnabled = true
-            stopItem.isEnabled = false
-            startItem.isEnabled = true
-            settingsItem.isEnabled = true
-        }
-        return true
-    }
-
-    private fun addTableRow(id: String, key: String, valStr: String) {
-        val tr = TableRow(this)
-        val params = ViewGroup.MarginLayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        params.setMargins(TABLE_ROW_MARGIN, TABLE_ROW_MARGIN, TABLE_ROW_MARGIN, TABLE_ROW_MARGIN)
-        tr.layoutParams = params
-
-        val name = TextView(this)
-        name.gravity = Gravity.RIGHT
-        name.text = "$key: "
-        val value = TextView(this)
-        value.gravity = Gravity.LEFT
-        value.text = valStr
-        value.tag = id
-        tr.addView(name)
-        tr.addView(value)
-        tl.addView(tr, params)
     }
 
     private fun queueCommands() {
@@ -442,11 +377,11 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
         if (!isServiceBound) {
             Log.d(TAG, "Binding OBD service..")
             if (preRequisites) {
-                btStatusTextView.text = getString(R.string.status_bluetooth_connecting)
+                viewModel.updateBtStatus(getString(R.string.status_bluetooth_connecting))
                 val serviceIntent = Intent(this, ObdGatewayService::class.java)
                 bindService(serviceIntent, serviceConn, BIND_AUTO_CREATE)
             } else {
-                btStatusTextView.text = getString(R.string.status_bluetooth_disabled)
+                viewModel.updateBtStatus(getString(R.string.status_bluetooth_disabled))
                 val serviceIntent = Intent(this, MockObdGatewayService::class.java)
                 bindService(serviceIntent, serviceConn, BIND_AUTO_CREATE)
             }
@@ -458,12 +393,12 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
             if (service!!.isRunning) {
                 service!!.stopService()
                 if (preRequisites)
-                    btStatusTextView.text = getString(R.string.status_bluetooth_ok)
+                    viewModel.updateBtStatus(getString(R.string.status_bluetooth_ok))
             }
             Log.d(TAG, "Unbinding OBD service..")
             unbindService(serviceConn)
             isServiceBound = false
-            obdStatusTextView.text = getString(R.string.status_obd_disconnected)
+            viewModel.updateObdStatus(getString(R.string.status_obd_disconnected))
         }
     }
 
@@ -479,16 +414,16 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
 
     override fun onGpsStatusChanged(event: Int) {
         when (event) {
-            GpsStatus.GPS_EVENT_STARTED -> gpsStatusTextView.text = getString(R.string.status_gps_started)
-            GpsStatus.GPS_EVENT_STOPPED -> gpsStatusTextView.text = getString(R.string.status_gps_stopped)
-            GpsStatus.GPS_EVENT_FIRST_FIX -> gpsStatusTextView.text = getString(R.string.status_gps_fix)
+            GpsStatus.GPS_EVENT_STARTED -> viewModel.updateGpsStatus(getString(R.string.status_gps_started))
+            GpsStatus.GPS_EVENT_STOPPED -> viewModel.updateGpsStatus(getString(R.string.status_gps_stopped))
+            GpsStatus.GPS_EVENT_FIRST_FIX -> viewModel.updateGpsStatus(getString(R.string.status_gps_fix))
         }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == REQUEST_ENABLE_BT) {
             if (resultCode == RESULT_OK) {
-                btStatusTextView.text = getString(R.string.status_bluetooth_connected)
+                viewModel.updateBtStatus(getString(R.string.status_bluetooth_connected))
             } else {
                 Toast.makeText(this, R.string.text_bluetooth_disabled, Toast.LENGTH_LONG).show()
             }
@@ -504,7 +439,7 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
                 mGpsIsStarted = true
             }
         } else {
-            gpsStatusTextView.text = getString(R.string.status_gps_no_support)
+            viewModel.updateGpsStatus(getString(R.string.status_gps_no_support))
         }
     }
 
@@ -513,7 +448,7 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
         if (mGpsIsStarted) {
             mLocService?.removeUpdates(this)
             mGpsIsStarted = false
-            gpsStatusTextView.text = getString(R.string.status_gps_stopped)
+            viewModel.updateGpsStatus(getString(R.string.status_gps_stopped))
         }
     }
 
@@ -526,7 +461,7 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
             ObdCommandJob.ObdCommandJobState.EXECUTION_ERROR -> {
                 cmdResult = job.command.result ?: ""
                 if (isServiceBound) {
-                    obdStatusTextView.text = cmdResult.lowercase()
+                    viewModel.updateObdStatus(cmdResult.lowercase())
                 }
             }
             ObdCommandJob.ObdCommandJobState.BROKEN_PIPE -> {
@@ -539,16 +474,11 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
             else -> {
                 cmdResult = job.command.formattedResult
                 if (isServiceBound)
-                    obdStatusTextView.text = getString(R.string.status_obd_data)
+                    viewModel.updateObdStatus(getString(R.string.status_obd_data))
             }
         }
 
-        val existingTV = vv.findViewWithTag<TextView>(cmdID)
-        if (existingTV != null) {
-            existingTV.text = cmdResult
-        } else {
-            addTableRow(cmdID, cmdName, cmdResult)
-        }
+        viewModel.updateObdData(cmdID, cmdResult)
         commandResult[cmdID] = cmdResult
         updateTripStatistic(job, cmdID)
     }
@@ -575,19 +505,15 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
             if (mLocProvider != null) {
                 mLocService!!.addGpsStatusListener(this)
                 if (mLocService!!.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                    gpsStatusTextView.text = getString(R.string.status_gps_ready)
+                    viewModel.updateGpsStatus(getString(R.string.status_gps_ready))
                     return true
                 }
             }
         }
-        gpsStatusTextView.text = getString(R.string.status_gps_no_support)
-        showDialog(NO_GPS_SUPPORT)
+        viewModel.updateGpsStatus(getString(R.string.status_gps_no_support))
+        showObdDialog(NO_GPS_SUPPORT)
         Log.e(TAG, "Unable to get GPS PROVIDER")
         return false
-    }
-
-    private fun updateTextView(view: TextView, txt: String) {
-        Handler(Looper.getMainLooper()).post { view.text = txt }
     }
 
     private inner class UploadAsyncTask(val prefs: SharedPreferences) : AsyncTask<ObdReading, Void, Void>() {
@@ -623,14 +549,8 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
         private val TAG = MainActivity::class.java.name
         private const val NO_BLUETOOTH_ID = 0
         private const val BLUETOOTH_DISABLED = 1
-        private const val START_LIVE_DATA = 2
-        private const val STOP_LIVE_DATA = 3
-        private const val SETTINGS = 4
-        private const val GET_DTC = 5
-        private const val TABLE_ROW_MARGIN = 7
         private const val NO_ORIENTATION_SENSOR = 8
         private const val NO_GPS_SUPPORT = 9
-        private const val TRIPS_LIST = 10
         private const val SAVE_TRIP_NOT_AVAILABLE = 11
         private const val REQUEST_ENABLE_BT = 1234
         private const val REQUEST_PERMISSIONS = 1235
@@ -642,5 +562,163 @@ class MainActivity : Activity(), ObdProgressListener, LocationListener, GpsStatu
             }
             return txt
         }
+    }
+}
+
+enum class MenuAction {
+    START_LIVE_DATA, STOP_LIVE_DATA, GET_DTC, TRIPS_LIST, SETTINGS
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MainScreen(viewModel: MainViewModel, onMenuAction: (MenuAction) -> Unit, isServiceRunning: Boolean) {
+    val gpsStatus by viewModel.gpsStatus.observeAsState("")
+    val btStatus by viewModel.btStatus.observeAsState("")
+    val obdStatus by viewModel.obdStatus.observeAsState("")
+    val compassDirection by viewModel.compassDirection.observeAsState("")
+    val obdData by viewModel.obdData.observeAsState(emptyMap())
+
+    var showMenu by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("OBD Reader") },
+                actions = {
+                    IconButton(onClick = { showMenu = !showMenu }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Menu")
+                    }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Start Live Data") },
+                            onClick = {
+                                showMenu = false
+                                onMenuAction(MenuAction.START_LIVE_DATA)
+                            },
+                            enabled = !isServiceRunning
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Stop Live Data") },
+                            onClick = {
+                                showMenu = false
+                                onMenuAction(MenuAction.STOP_LIVE_DATA)
+                            },
+                            enabled = isServiceRunning
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Get DTC") },
+                            onClick = {
+                                showMenu = false
+                                onMenuAction(MenuAction.GET_DTC)
+                            },
+                            enabled = !isServiceRunning
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Trip List") },
+                            onClick = {
+                                showMenu = false
+                                onMenuAction(MenuAction.TRIPS_LIST)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Settings") },
+                            onClick = {
+                                showMenu = false
+                                onMenuAction(MenuAction.SETTINGS)
+                            },
+                            enabled = !isServiceRunning
+                        )
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = obdData["SPEED"] ?: "0",
+                    fontSize = 48.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = compassDirection.ifEmpty { "N/A" },
+                    fontSize = 48.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                InfoItem(label = "Fuel", value = obdData["FUEL_CONSUMPTION"] ?: "N/A")
+                InfoItem(label = "Runtime", value = obdData["ENGINE_RUNTIME"] ?: "N/A")
+                InfoItem(label = "RPM", value = obdData["ENGINE_RPM"] ?: "N/A")
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Surface(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                tonalElevation = 2.dp,
+                shape = MaterialTheme.shapes.medium
+            ) {
+                LazyColumn(
+                    modifier = Modifier.padding(8.dp)
+                ) {
+                    items(obdData.toList()) { (key, value) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(text = "$key:", fontWeight = FontWeight.SemiBold)
+                            Text(text = value)
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                StatusItem(label = "GPS", status = gpsStatus)
+                StatusItem(label = "BT", status = btStatus)
+                StatusItem(label = "OBD", status = obdStatus)
+            }
+        }
+    }
+}
+
+@Composable
+fun InfoItem(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(text = label, style = MaterialTheme.typography.labelMedium)
+        Text(text = value, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+@Composable
+fun StatusItem(label: String, status: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(100.dp)) {
+        Text(text = label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+        Text(text = status, style = MaterialTheme.typography.bodySmall, maxLines = 2)
     }
 }
